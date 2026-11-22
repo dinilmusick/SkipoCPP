@@ -16,6 +16,10 @@ jobs:
             build: Release
           - os: macos-latest
             build: Debug
+          - os: macos-latest
+            build: Release
+          - os: windows-latest
+            build: Debug
           - os: windows-latest
             build: Release
     runs-on: ${{ matrix.os }}
@@ -44,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S . -B _build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE="${{ matrix.build }}" -DCMAKE_INSTALL_PREFIX="$PWD/_install" -DCMAKE_PREFIX_PATH="$PWD/_install"
+          cmake -S . -B _build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE="${{ matrix.build }}" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF -DCMAKE_INSTALL_PREFIX="$PWD/_install" -DCMAKE_PREFIX_PATH="$PWD/_install"
           cmake --build _build --config "${{ matrix.build }}" --parallel 2
           ctest --test-dir _build -C "${{ matrix.build }}" --output-on-failure
           cmake --install _build --config "${{ matrix.build }}"
@@ -52,7 +56,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S consumer -B _external -DCMAKE_BUILD_TYPE="${{ matrix.build }}" -DCMAKE_PREFIX_PATH="$PWD/_install"
+          cmake -S consumer -B _external -DCMAKE_BUILD_TYPE="${{ matrix.build }}" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF -DCMAKE_PREFIX_PATH="$PWD/_install"
           cmake --build _external --config "${{ matrix.build }}" --parallel 2
           ctest --test-dir _external -C "${{ matrix.build }}" --output-on-failure
   sanitize:
