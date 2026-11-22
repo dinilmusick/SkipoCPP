@@ -27,7 +27,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/SkipoCPPConfig.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SkipoCPP)
 include(CTest)
 if(BUILD_TESTING)
-  foreach(test_name application workflow ui)
+  foreach(test_name application workflow ui host)
     add_executable(skipocpp_${test_name}_test tests/${test_name}.cpp)
     target_link_libraries(skipocpp_${test_name}_test PRIVATE SkipoCPP::core)
     if(MSVC)
