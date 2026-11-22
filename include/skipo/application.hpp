@@ -31,6 +31,28 @@ class Application {
   std::vector<std::string> service_order_;
   ApplicationState state_{ApplicationState::created};
   bool changing_{false};
+  // A capability declaration is a composition plan, never a virtual provider.
+  // Resolution bottoms out in an actual Kloks service or injected host.
+  bool has_provider(const std::string& id, std::set<std::string>& visiting) const {
+    if(hosts_.available(id)) return true;
+    for(const auto& [service, caps]:provided_) {
+      (void)service;
+      if(caps.count(id)) return true;
+    }
+    const auto it=capabilities_.find(id);
+    if(it==capabilities_.end()||it->second.dependencies.empty()) return false;
+    if(!visiting.insert(id).second)
+      throw Error(ErrorCode::cycle,id,"capability provider cycle");
+    for(const auto& dependency:it->second.dependencies) {
+      if(!has_provider(dependency,visiting)) {
+        visiting.erase(id);
+        return false;
+      }
+    }
+    visiting.erase(id);
+    return true;
+  }
+
   struct Changing {
     bool& flag;
     explicit Changing(bool& value):flag(value) { if(flag) throw Error(ErrorCode::invalid_state,"application","reentrant lifecycle");flag=true; }
@@ -64,11 +86,22 @@ class Application {
   ApplicationState state() const noexcept { return state_; }
   kloks::ServiceRegistry& services() noexcept { return services_; }
   const HostBindings& hosts() const noexcept { return hosts_; }
+  kloks::Value invoke(const std::string& service,const std::string& operation,
+                      const kloks::Value& input={}) {
+    if(state_!=ApplicationState::running||changing_)
+      throw Error(ErrorCode::invalid_state,"application","service invocation requires running application");
+    return services_.call(service,operation,input);
+  }
   void add_capability(Capability value) {
     if(state_!=ApplicationState::created) throw Error(ErrorCode::invalid_state,"capability","registration closed");
     if(value.id.empty()) throw Error(ErrorCode::invalid_definition,"capability","empty id");
-    for(const auto& dep:value.dependencies) if(dep.empty()||dep==value.id)
-      throw Error(ErrorCode::invalid_definition,value.id,"invalid capability dependency");
+    std::set<std::string> seen;
+    for(const auto& dep:value.dependencies) {
+      if(dep.empty()||dep==value.id)
+        throw Error(ErrorCode::invalid_definition,value.id,"invalid capability dependency");
+      if(!seen.insert(dep).second)
+        throw Error(ErrorCode::duplicate,value.id,"duplicate capability dependency");
+    }
     auto id=value.id;
     if(!capabilities_.emplace(id,std::move(value)).second)
       throw Error(ErrorCode::duplicate,id,"duplicate capability");
@@ -89,12 +122,19 @@ class Application {
     for(const auto& host:descriptor_.required_hosts)
       if(!hosts_.available(host)) throw Error(ErrorCode::host_unavailable,host,"required host is unavailable");
     std::map<std::string,std::vector<std::string>> cap_graph;
-    std::set<std::string> available;
-    for(const auto& [name,cap]:capabilities_) {cap_graph[name]=cap.dependencies;available.insert(name);}
+    for(const auto& [name,cap]:capabilities_) cap_graph[name]=cap.dependencies;
     (void)order(cap_graph,"capability");
-    for(const auto& entry:provided_)available.insert(entry.second.begin(),entry.second.end());
-    for(const auto& required:descriptor_.required_capabilities)
-      if(!available.count(required))throw Error(ErrorCode::missing_capability,required,"capability has no provider");
+    for(const auto& [name,cap]:capabilities_) {
+      (void)cap;
+      std::set<std::string> visiting;
+      if(!has_provider(name,visiting))
+        throw Error(ErrorCode::missing_capability,name,"declared capability has no concrete provider");
+    }
+    for(const auto& required:descriptor_.required_capabilities) {
+      std::set<std::string> visiting;
+      if(!has_provider(required,visiting))
+        throw Error(ErrorCode::missing_capability,required,"required capability has no concrete provider");
+    }
     service_order_=order(dependencies_,"service");
     state_=ApplicationState::initialized;
   }
