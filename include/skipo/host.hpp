@@ -45,6 +45,42 @@ struct HostBindings {
   Configuration& require_configuration() const { if(!configuration) throw Error(ErrorCode::host_unavailable,"configuration","configuration not provided");return *configuration; }
   Clock& require_clock() const { if(!clock) throw Error(ErrorCode::host_unavailable,"clock","clock not provided");return *clock; }
   RemoteCapabilities& require_remote() const { if(!remote) throw Error(ErrorCode::host_unavailable,"remote","remote capability provider not provided");return *remote; }
+  std::vector<std::uint8_t> read_workspace(const std::string& key) const {
+    if(key.empty()) throw Error(ErrorCode::invalid_definition,"workspace","workspace key required");
+    try{return require_workspace().read(key);}
+    catch(const Error&) {throw;}
+    catch(const std::exception& e){throw Error(ErrorCode::host_failed,"workspace",e.what());}
+    catch(...){throw Error(ErrorCode::host_failed,"workspace","unknown read failure");}
+  }
+  void write_workspace(const std::string& key,const std::vector<std::uint8_t>& bytes) const {
+    if(key.empty()) throw Error(ErrorCode::invalid_definition,"workspace","workspace key required");
+    try{require_workspace().write(key,bytes);}
+    catch(const Error&) {throw;}
+    catch(const std::exception& e){throw Error(ErrorCode::host_failed,"workspace",e.what());}
+    catch(...){throw Error(ErrorCode::host_failed,"workspace","unknown write failure");}
+  }
+  std::string config_value(const std::string& key) const {
+    if(key.empty()) throw Error(ErrorCode::invalid_definition,"configuration","configuration key required");
+    try{return require_configuration().get(key);}
+    catch(const Error&) {throw;}
+    catch(const std::exception& e){throw Error(ErrorCode::host_failed,"configuration",e.what());}
+    catch(...){throw Error(ErrorCode::host_failed,"configuration","unknown lookup failure");}
+  }
+  std::int64_t time_millis() const {
+    try{return require_clock().monotonic_millis();}
+    catch(const Error&) {throw;}
+    catch(const std::exception& e){throw Error(ErrorCode::host_failed,"clock",e.what());}
+    catch(...){throw Error(ErrorCode::host_failed,"clock","unknown clock failure");}
+  }
+  kloks::Value call_remote(const std::string& service,const std::string& operation,
+                           const kloks::Value& input={}) const {
+    if(service.empty()||operation.empty())
+      throw Error(ErrorCode::invalid_definition,"remote","service and operation required");
+    try{return require_remote().invoke(service,operation,input);}
+    catch(const Error&) {throw;}
+    catch(const std::exception& e){throw Error(ErrorCode::host_failed,"remote",e.what());}
+    catch(...){throw Error(ErrorCode::host_failed,"remote","unknown remote failure");}
+  }
   // Normalize host faults without replacing ownership or transport implementations.
   Response send(const Request& req) const {
     if(req.method.empty()||req.url.empty())
@@ -53,7 +89,7 @@ struct HostBindings {
       auto response=require_transport().request(req);
       if(response.status==401||response.status==403)
         throw Error(ErrorCode::unauthorized,"transport","host rejected authorization");
-      if(response.status<200||response.status>=400)
+      if(response.status<200||response.status>=300)
         throw Error(ErrorCode::host_failed,"transport","non-success host status "+std::to_string(response.status));
       return response;
     } catch(const Error&) {throw;}
