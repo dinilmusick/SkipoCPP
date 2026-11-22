@@ -93,7 +93,7 @@ int main(){
   // A second, independently installed native application validates the
   // provider stop contract. Returning explicit codes works in Release builds.
   int base_stops=0,child_attempts=0;
-  skipo::Application teardown({"teardown","1"});
+  skipo::Application teardown({"teardown","1",{}, {}});
   kloks::ServiceDefinition base;
   base.id="base";base.name="Base";base.version="1";
   base.on_stop=[&]{++base_stops;};
@@ -120,7 +120,7 @@ int main(){
   if(teardown.state()!=skipo::ApplicationState::disposed) return 45;
   // Suspend failure must be visible, with stopped resources never claimed.
   int suspend_attempts=0, suspend_base_stops=0;
-  skipo::Application suspender({"suspender","1"});
+  skipo::Application suspender({"suspender","1",{}, {}});
   kloks::ServiceDefinition sbase;
   sbase.id="provider";sbase.name="Provider";sbase.version="1";
   sbase.on_stop=[&]{++suspend_base_stops;};
