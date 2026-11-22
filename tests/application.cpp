@@ -69,7 +69,7 @@ int main() {
   skipo::Application broken_cap({"broken-cap","1",{},{}});
   broken_cap.add_capability({"a",{"missing"}});
   try{broken_cap.initialize();assert(false);}
-  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::missing_service);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::missing_capability);}
   skipo::Application duplicates({"duplicates","1",{},{}});
   try{duplicates.add_capability({"a",{"b","b"}});assert(false);}
   catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::duplicate);}
