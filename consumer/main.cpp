@@ -32,7 +32,7 @@ int main(){
   kloks::ServiceDefinition second;second.id="sink";second.name="Sink";second.version="1";second.dependencies={"source"};
   second.operations["write"]=[&](const kloks::Value& input,const kloks::ServiceContext&) {
     auto n=std::get<std::int64_t>(input)*3;
-    hosts.require_workspace().write("number.bin",{static_cast<std::uint8_t>(n)});
+    hosts.write_workspace("number.bin",{static_cast<std::uint8_t>(n)});
     return kloks::Value{n};
   };
   app.add_service(std::move(second));
@@ -56,13 +56,13 @@ int main(){
   {
     skipo::UiCommands ui(tree,semantic);
     ui.bind_button("run",[&]{
-      result=workflow.run(app.services());
+      result=workflow.run(app,{},{"ui-event","ui-write-once"});
       if(result.state==skipo::ExecutionState::completed) semantic.set_state("status","done");
     });
     assert(ui.activate("run"));
     assert(result.state==skipo::ExecutionState::completed);
     assert(std::get<std::int64_t>(result.output.at("save"))==24);
-    assert(workspace.read("number.bin")==std::vector<std::uint8_t>{24});
+    assert(hosts.read_workspace("number.bin")==std::vector<std::uint8_t>{24});
     assert(semantic.has_component("run"));
     assert(semantic.current_state("status")=="done" && observed_events==1);
   }
@@ -72,7 +72,7 @@ int main(){
   catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::invalid_definition);}
   skipo::Workflow broken;
   broken.add({"reject","source","reject",{},nullptr,1,false});
-  auto bad=broken.run(app.services());
+  auto bad=broken.run(app);
   assert(bad.state==skipo::ExecutionState::failed && bad.failure.has_value());
   struct BrokenTransport : skipo::Transport {
     skipo::Response request(const skipo::Request&)override {throw std::runtime_error("network offline");}
@@ -86,6 +86,9 @@ int main(){
   hosts.transport=&unauthorized;
   try{(void)hosts.send({"GET","/private",{}});assert(false);}
   catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::unauthorized);}
-  app.stop();app.dispose();
+  app.stop();
+  try{(void)workflow.run(app,{},{"cached","ui-write-once"});assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::invalid_state);}
+  app.dispose();
   return 0;
 }
