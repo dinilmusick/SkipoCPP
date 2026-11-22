@@ -27,8 +27,10 @@ class UiCommands {
   void bind_button(const std::string& id,std::function<void()> action) {
     if(!action) throw Error(ErrorCode::invalid_definition,id,"button requires an action");
     if(tree_.require(id)->type()!="Button")throw Error(ErrorCode::invalid_definition,id,"not a Floks Button");
-    bridge_.register_button(id,std::move(action));
     const std::weak_ptr<bool> token=alive_;
+    bridge_.register_button(id,[token,action=std::move(action)] {
+      if(const auto valid=token.lock();valid&&*valid) action();
+    });
     auto* runtime=&runtime_;
     listeners_.push_back(tree_.on_scoped(id,"activate",[token,runtime,id](const floks::Event&){
       if(const auto valid=token.lock();valid&&*valid) (void)runtime->invoke(id,"activate");
