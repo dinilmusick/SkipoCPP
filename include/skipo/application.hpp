@@ -58,7 +58,8 @@ class Application {
     explicit Changing(bool& value):flag(value) { if(flag) throw Error(ErrorCode::invalid_state,"application","reentrant lifecycle");flag=true; }
     ~Changing(){flag=false;}
   };
-  static std::vector<std::string> order(const std::map<std::string,std::vector<std::string>>& graph, const std::string& kind) {
+  static std::vector<std::string> order(const std::map<std::string,std::vector<std::string>>& graph, const std::string& kind,
+                                         std::function<bool(const std::string&)> external={}) {
     std::map<std::string,int> colors;
     std::vector<std::string> result;
     std::function<void(const std::string&)> visit=[&](const std::string& id) {
@@ -66,7 +67,11 @@ class Application {
       if(colors[id]==1) throw Error(ErrorCode::cycle,id,kind+" dependency cycle");
       colors[id]=1;
       for(const auto& dep:graph.at(id)){
-        if(!graph.count(dep)) throw Error(ErrorCode::missing_service,id,"unresolved "+kind+" dependency: "+dep);
+        if(!graph.count(dep)) {
+          if(external&&external(dep))continue;
+          throw Error(kind=="capability"?ErrorCode::missing_capability:ErrorCode::missing_service,
+                      id,"unresolved "+kind+" dependency: "+dep);
+        }
         visit(dep);
       }
       colors[id]=2;result.push_back(id);
@@ -123,7 +128,10 @@ class Application {
       if(!hosts_.available(host)) throw Error(ErrorCode::host_unavailable,host,"required host is unavailable");
     std::map<std::string,std::vector<std::string>> cap_graph;
     for(const auto& [name,cap]:capabilities_) cap_graph[name]=cap.dependencies;
-    (void)order(cap_graph,"capability");
+    (void)order(cap_graph,"capability",[this](const std::string& id) {
+      std::set<std::string> visiting;
+      return has_provider(id,visiting);
+    });
     for(const auto& [name,cap]:capabilities_) {
       (void)cap;
       std::set<std::string> visiting;
