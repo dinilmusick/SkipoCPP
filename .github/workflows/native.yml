@@ -52,13 +52,21 @@ jobs:
           cmake --build _build --config "${{ matrix.build }}" --parallel 2
           ctest --test-dir _build -C "${{ matrix.build }}" --output-on-failure
           cmake --install _build --config "${{ matrix.build }}"
-      - name: Clean installed-package consumer
+      - name: Clean-room external application and missing-package negative
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S consumer -B _external -DCMAKE_BUILD_TYPE="${{ matrix.build }}" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF -DCMAKE_PREFIX_PATH="$PWD/_install"
-          cmake --build _external --config "${{ matrix.build }}" --parallel 2
-          ctest --test-dir _external -C "${{ matrix.build }}" --output-on-failure
+          # Consumer sources are copied OUTSIDE the repository checkout.
+          # The only library search path is the installed prefix.
+          mkdir -p ../skipocpp-independent-source
+          cp consumer/CMakeLists.txt consumer/main.cpp ../skipocpp-independent-source/
+          cmake -S ../skipocpp-independent-source -B ../skipocpp-independent-build -DCMAKE_BUILD_TYPE="${{ matrix.build }}" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF -DCMAKE_PREFIX_PATH="$PWD/_install"
+          cmake --build ../skipocpp-independent-build --config "${{ matrix.build }}" --parallel 2
+          ctest --test-dir ../skipocpp-independent-build -C "${{ matrix.build }}" --output-on-failure
+          if cmake -S ../skipocpp-independent-source -B ../skipocpp-negative-build -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF -DCMAKE_PREFIX_PATH="$PWD/_nonexistent-prefix"; then
+            echo "FAIL: consumer configured without installed native package" >&2
+            exit 1
+          fi
   sanitize:
     runs-on: ubuntu-latest
     steps:
@@ -84,6 +92,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S . -B _sanitize -DCMAKE_PREFIX_PATH="$PWD/_install" -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake -S . -B _sanitize -DCMAKE_PREFIX_PATH="$PWD/_install" -DCMAKE_INSTALL_PREFIX="$PWD/_install" -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
           cmake --build _sanitize --parallel 2
           ctest --test-dir _sanitize --output-on-failure
+          cmake --install _sanitize
+          mkdir -p ../skipocpp-sanitize-consumer
+          cp consumer/CMakeLists.txt consumer/main.cpp ../skipocpp-sanitize-consumer/
+          cmake -S ../skipocpp-sanitize-consumer -B ../skipocpp-sanitize-build -DCMAKE_PREFIX_PATH="$PWD/_install" -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build ../skipocpp-sanitize-build --parallel 2
+          ctest --test-dir ../skipocpp-sanitize-build --output-on-failure
