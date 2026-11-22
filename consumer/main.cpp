@@ -90,5 +90,53 @@ int main(){
   try{(void)workflow.run(app,{},{"cached","ui-write-once"});assert(false);}
   catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::invalid_state);}
   app.dispose();
+  // A second, independently installed native application validates the
+  // provider stop contract. Returning explicit codes works in Release builds.
+  int base_stops=0,child_attempts=0;
+  skipo::Application teardown({"teardown","1"});
+  kloks::ServiceDefinition base;
+  base.id="base";base.name="Base";base.version="1";
+  base.on_stop=[&]{++base_stops;};
+  teardown.add_service(std::move(base));
+  kloks::ServiceDefinition child;
+  child.id="child";child.name="Child";child.version="1";
+  child.dependencies={"base"};
+  child.on_stop=[&]{if(++child_attempts==1) throw std::runtime_error("host cleanup failed");};
+  teardown.add_service(std::move(child));
+  teardown.initialize();
+  teardown.start();
+  try {teardown.stop();return 41;}
+  catch(const kloks::ServiceError& e){
+    if(e.code()!=kloks::ErrorCode::host_failure||e.service()!="child")return 42;
+  }
+  if(teardown.state()!=skipo::ApplicationState::failed ||
+     !teardown.services().started("child") || !teardown.services().started("base") ||
+     base_stops!=0) return 43;
+  // Explicit retry stops the failed dependent first, then its provider.
+  teardown.stop();
+  if(teardown.state()!=skipo::ApplicationState::stopped ||
+     child_attempts!=2||base_stops!=1) return 44;
+  teardown.dispose();
+  if(teardown.state()!=skipo::ApplicationState::disposed) return 45;
+  // Suspend failure must be visible, with stopped resources never claimed.
+  int suspend_attempts=0, suspend_base_stops=0;
+  skipo::Application suspender({"suspender","1"});
+  kloks::ServiceDefinition sbase;
+  sbase.id="provider";sbase.name="Provider";sbase.version="1";
+  sbase.on_stop=[&]{++suspend_base_stops;};
+  suspender.add_service(std::move(sbase));
+  kloks::ServiceDefinition schild;
+  schild.id="dependent";schild.name="Dependent";schild.version="1";
+  schild.dependencies={"provider"};
+  schild.on_stop=[&]{if(++suspend_attempts==1)throw std::runtime_error("suspend stop failed");};
+  suspender.add_service(std::move(schild));
+  suspender.initialize();suspender.start();
+  try{suspender.suspend();return 46;}
+  catch(const kloks::ServiceError& e){if(e.code()!=kloks::ErrorCode::host_failure)return 47;}
+  if(suspender.state()!=skipo::ApplicationState::failed ||
+     suspend_base_stops!=0||!suspender.services().started("provider")) return 48;
+  suspender.dispose();
+  if(suspend_attempts!=2||suspend_base_stops!=1||
+     suspender.state()!=skipo::ApplicationState::disposed) return 49;
   return 0;
 }
