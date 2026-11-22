@@ -28,12 +28,12 @@ int main() {
   app.suspend();assert(log[2]=="second:stop" && log[3]=="first:stop");
   app.resume();app.stop();app.stop();app.dispose();app.dispose();
   assert(app.state()==skipo::ApplicationState::disposed);
-  skipo::Application cycle({"cycle","1"});
+  skipo::Application cycle({"cycle","1",{}, {}});
   kloks::ServiceDefinition a;a.id="a";a.name="A";a.version="1";a.dependencies={"b"};
   kloks::ServiceDefinition b;b.id="b";b.name="B";b.version="1";b.dependencies={"a"};
   cycle.add_service(std::move(a));cycle.add_service(std::move(b));
   try{cycle.initialize();assert(false);}catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::cycle);}
-  skipo::Application rollback({"fail","1"});
+  skipo::Application rollback({"fail","1",{}, {}});
   kloks::ServiceDefinition ok;ok.id="ok";ok.name="OK";ok.version="1";ok.on_start=[&]{log.push_back("ok:start");};
   ok.on_stop=[&]{log.push_back("ok:stop");};
   kloks::ServiceDefinition bad;bad.id="bad";bad.name="Bad";bad.version="1";bad.dependencies={"ok"};
