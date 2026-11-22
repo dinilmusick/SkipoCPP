@@ -1,0 +1,89 @@
+name: SkipoCPP pinned native build and external consumer
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            build: Debug
+          - os: ubuntu-latest
+            build: Release
+          - os: macos-latest
+            build: Debug
+          - os: macos-latest
+            build: Release
+          - os: windows-latest
+            build: Debug
+          - os: windows-latest
+            build: Release
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone and install exact upstream revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _deps _install
+          while read -r name sha; do
+            git clone -q "https://github.com/dinilmusick/${name}.git" "_deps/${name}"
+            git -C "_deps/${name}" checkout -q --detach "${sha}"
+            test "$(git -C "_deps/${name}" rev-parse HEAD)" = "${sha}"
+            cmake -S "_deps/${name}" -B "_deps/${name}/build" -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX="$PWD/_install"
+            cmake --build "_deps/${name}/build" --config "${{ matrix.build }}" --parallel 2
+            cmake --install "_deps/${name}/build" --config "${{ matrix.build }}"
+          done <<'LOCK'
+          GutCPP 443ad9397c081dd596e784c50cff14c1ecad95c6
+          KrnlCPP b2b9814e2fb7034a72d5f9c3b5fd6a3b005ed883
+          FrnlCPP 536a46228a8fde46fddc95447ca264fa2ed5fd6b
+          KloksCPP 14c0ffac92165abf07f46c2ae8b326c4f80c7a0d
+          FloksCPP 32e8088630e415718d35f30fd49e456727c1fadc
+          LOCK
+      - name: Build, unit tests and install SkipoCPP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B _build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE="${{ matrix.build }}" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF -DCMAKE_INSTALL_PREFIX="$PWD/_install" -DCMAKE_PREFIX_PATH="$PWD/_install"
+          cmake --build _build --config "${{ matrix.build }}" --parallel 2
+          ctest --test-dir _build -C "${{ matrix.build }}" --output-on-failure
+          cmake --install _build --config "${{ matrix.build }}"
+      - name: Clean installed-package consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S consumer -B _external -DCMAKE_BUILD_TYPE="${{ matrix.build }}" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF -DCMAKE_PREFIX_PATH="$PWD/_install"
+          cmake --build _external --config "${{ matrix.build }}" --parallel 2
+          ctest --test-dir _external -C "${{ matrix.build }}" --output-on-failure
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned native header packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _deps _install
+          while read -r name sha; do
+            git clone -q "https://github.com/dinilmusick/${name}.git" "_deps/${name}"
+            git -C "_deps/${name}" checkout -q --detach "${sha}"
+            cmake -S "_deps/${name}" -B "_deps/${name}/build" -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX="$PWD/_install"
+            cmake --install "_deps/${name}/build"
+          done <<'LOCK'
+          GutCPP 443ad9397c081dd596e784c50cff14c1ecad95c6
+          KrnlCPP b2b9814e2fb7034a72d5f9c3b5fd6a3b005ed883
+          FrnlCPP 536a46228a8fde46fddc95447ca264fa2ed5fd6b
+          KloksCPP 14c0ffac92165abf07f46c2ae8b326c4f80c7a0d
+          FloksCPP 32e8088630e415718d35f30fd49e456727c1fadc
+          LOCK
+      - name: ASan and UBSan
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B _sanitize -DCMAKE_PREFIX_PATH="$PWD/_install" -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build _sanitize --parallel 2
+          ctest --test-dir _sanitize --output-on-failure

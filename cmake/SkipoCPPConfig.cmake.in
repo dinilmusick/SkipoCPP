@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(GutCPP CONFIG REQUIRED)
+find_dependency(KrnlCpp CONFIG REQUIRED)
+find_dependency(KloksCPP CONFIG REQUIRED)
+find_dependency(FrnlCPP CONFIG REQUIRED)
+find_dependency(FloksCPP CONFIG REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/SkipoCPPTargets.cmake")
+check_required_components(SkipoCPP)
