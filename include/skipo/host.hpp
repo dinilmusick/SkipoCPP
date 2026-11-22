@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace skipo {
-enum class ErrorCode { invalid_definition, duplicate, missing_capability, missing_service, cycle, invalid_state, cancelled, operation_failed, host_unavailable, host_failed, idempotency_conflict };
+enum class ErrorCode { invalid_definition, duplicate, missing_capability, missing_service, cycle, invalid_state, cancelled, operation_failed, host_unavailable, host_failed, unauthorized, idempotency_conflict };
 class Error : public std::runtime_error {
   ErrorCode code_;
   std::string source_;
@@ -45,5 +45,23 @@ struct HostBindings {
   Configuration& require_configuration() const { if(!configuration) throw Error(ErrorCode::host_unavailable,"configuration","configuration not provided");return *configuration; }
   Clock& require_clock() const { if(!clock) throw Error(ErrorCode::host_unavailable,"clock","clock not provided");return *clock; }
   RemoteCapabilities& require_remote() const { if(!remote) throw Error(ErrorCode::host_unavailable,"remote","remote capability provider not provided");return *remote; }
+  // Normalize host faults without replacing ownership or transport implementations.
+  Response send(const Request& req) const {
+    if(req.method.empty()||req.url.empty())
+      throw Error(ErrorCode::invalid_definition,"transport","method and URL are required");
+    try {
+      auto response=require_transport().request(req);
+      if(response.status==401||response.status==403)
+        throw Error(ErrorCode::unauthorized,"transport","host rejected authorization");
+      if(response.status<200||response.status>=400)
+        throw Error(ErrorCode::host_failed,"transport","non-success host status "+std::to_string(response.status));
+      return response;
+    } catch(const Error&) {throw;}
+    catch(const std::exception& error) {
+      throw Error(ErrorCode::host_failed,"transport",error.what());
+    } catch(...) {
+      throw Error(ErrorCode::host_failed,"transport","unknown transport failure");
+    }
+  }
 };
 }
