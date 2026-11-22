@@ -16,8 +16,12 @@ int main(){
     assert(ui.activate("run"));
     assert(calls==1&&runtime.has_component("run")&&observed==1);
   }
+  // Frnl retains the semantic handler, but a disposed UiCommands owner must not
+  // execute stale application callbacks even when an external host invokes it.
+  (void)runtime.invoke("run","activate");
+  assert(calls==1&&observed==2);
   floks::Controls direct(tree);
   assert(direct.activate_button("run"));
-  assert(calls==1&&observed==1);
+  assert(calls==1&&observed==2);
   return 0;
 }
