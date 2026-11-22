@@ -65,8 +65,10 @@ int main(){
     assert(semantic.has_component("run"));
     assert(semantic.current_state("status")=="done" && observed_events==1);
   }
-  try{(void)hosts.require_transport().request({"GET","/missing",{}});assert(false);}
+  try{(void)hosts.send({"GET","/missing",{}});assert(false);}
   catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::host_unavailable);}
+  try{(void)hosts.send({"","/malformed",{}});assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::invalid_definition);}
   skipo::Workflow broken;
   broken.add({"reject","source","reject",{},nullptr,1,false});
   auto bad=broken.run(app.services());
@@ -75,8 +77,14 @@ int main(){
     skipo::Response request(const skipo::Request&)override {throw std::runtime_error("network offline");}
   } broken_transport;
   hosts.transport=&broken_transport;
-  try{(void)hosts.require_transport().request({"GET","/offline",{}});assert(false);}
-  catch(const std::runtime_error& e){assert(std::string(e.what())=="network offline");}
+  try{(void)hosts.send({"GET","/offline",{}});assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::host_failed);}
+  struct UnauthorizedTransport : skipo::Transport {
+    skipo::Response request(const skipo::Request&)override {return {403,{}};}
+  } unauthorized;
+  hosts.transport=&unauthorized;
+  try{(void)hosts.send({"GET","/private",{}});assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::unauthorized);}
   app.stop();app.dispose();
   return 0;
 }
