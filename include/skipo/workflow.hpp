@@ -69,25 +69,46 @@ class Workflow {
     if(step.id.empty()||step.service.empty()||step.operation.empty()||step.max_attempts==0 || (step.max_attempts>1&&!step.retry_safe))
       throw Error(ErrorCode::invalid_definition,step.id,"invalid workflow step or unsafe retry");
     if(steps_.count(step.id))throw Error(ErrorCode::duplicate,step.id,"duplicate workflow step");
-    for(const auto& dep:step.depends_on)if(dep==step.id||dep.empty())
-      throw Error(ErrorCode::invalid_definition,step.id,"invalid dependency");
+    std::set<std::string> unique;
+    for(const auto& dep:step.depends_on) {
+      if(dep==step.id||dep.empty())
+        throw Error(ErrorCode::invalid_definition,step.id,"invalid dependency");
+      if(!unique.insert(dep).second)
+        throw Error(ErrorCode::duplicate,step.id,"duplicate dependency");
+    }
     steps_.emplace(step.id,std::move(step));dirty_=true;cache_.clear();
   }
   void validate() {
     if(steps_.empty())throw Error(ErrorCode::invalid_definition,"workflow","empty workflow");
     ordered_=sort(steps_);dirty_=false;
   }
-  Execution run(kloks::ServiceRegistry& services,const Values& input={},ExecutionOptions options={}) {
-    if(dirty_)validate();
+ private:
+  template<class Dispatch>
+  Execution execute(Dispatch&& dispatch,const Values& input,ExecutionOptions options) {
+    if(dirty_) validate();
+    Execution out;
+    out.correlation_id=options.correlation_id;
+    const auto cancelled=[&]{return options.cancel && options.cancel->load();};
+    if(cancelled()) {
+      out.state=ExecutionState::cancelled;
+      out.failure=Failure{ErrorCode::cancelled,ordered_.front(),"execution cancelled"};
+      return out;
+    }
+    for(const auto& [id,step]:steps_) {
+      (void)id;
+      if(step.max_attempts>1 && options.idempotency_key.empty())
+        throw Error(ErrorCode::invalid_definition,step.id,"retry requires an idempotency key");
+    }
     if(!options.idempotency_key.empty()) {
       auto it=cache_.find(options.idempotency_key);
       if(it!=cache_.end()) {
-        if(it->second.input!=input)throw Error(ErrorCode::idempotency_conflict,"workflow","idempotency key reused for different input");
-        auto result=it->second.result;result.from_idempotency_cache=true;return result;
+        if(it->second.input!=input)
+          throw Error(ErrorCode::idempotency_conflict,"workflow","idempotency key reused for different input");
+        auto result=it->second.result;
+        result.from_idempotency_cache=true;
+        return result;
       }
     }
-    Execution out;out.correlation_id=std::move(options.correlation_id);
-    const auto cancelled=[&]{return options.cancel && options.cancel->load();};
     for(const auto& id:ordered_) {
       if(cancelled()) {
         out.state=ExecutionState::cancelled;
@@ -97,42 +118,81 @@ class Workflow {
       const auto& step=steps_.at(id);
       kloks::Value argument;
       try {
-        if(step.make_input) argument=step.make_input(out.output,input);
-        else {
+        if(step.make_input) {
+          Values predecessors;
+          for(const auto& dependency:step.depends_on)
+            predecessors.emplace(dependency,out.output.at(dependency));
+          argument=step.make_input(predecessors,input);
+        } else {
           const auto it=input.find(id);
           if(it!=input.end()) argument=it->second;
         }
-      } catch(const std::exception& e) {
-        out.failure=Failure{ErrorCode::invalid_definition,id,e.what()};return out;
+      } catch(const std::exception& error) {
+        out.failure=Failure{ErrorCode::invalid_definition,id,error.what()};
+        return out;
+      } catch(...) {
+        out.failure=Failure{ErrorCode::invalid_definition,id,"unknown input mapping failure"};
+        return out;
       }
       for(unsigned attempt=1;attempt<=step.max_attempts;++attempt) {
         if(cancelled()) {
           out.state=ExecutionState::cancelled;
-          out.failure=Failure{ErrorCode::cancelled,id,"execution cancelled"};return out;
+          out.failure=Failure{ErrorCode::cancelled,id,"execution cancelled"};
+          return out;
         }
         Trace trace{out.correlation_id,id,step.service,step.operation,attempt,false,{}};
         try {
-          out.output[id]=services.call(step.service,step.operation,argument);
-          trace.success=true;out.traces.push_back(std::move(trace));break;
-        } catch(const kloks::ServiceError& e) {
-          trace.detail=e.what();out.traces.push_back(std::move(trace));
-          if(attempt==step.max_attempts) {
-            out.failure=Failure{ErrorCode::operation_failed,id,e.what()};return out;
+          out.output[id]=dispatch(step.service,step.operation,argument);
+          trace.success=true;
+          out.traces.push_back(std::move(trace));
+          break;
+        } catch(const kloks::ServiceError& error) {
+          trace.detail=error.what();
+          out.traces.push_back(std::move(trace));
+          if(attempt==step.max_attempts || error.code()!=kloks::ErrorCode::host_failure) {
+            out.failure=Failure{ErrorCode::operation_failed,id,error.what()};
+            return out;
           }
-        } catch(const std::exception& e) {
-          trace.detail=e.what();out.traces.push_back(std::move(trace));
+        } catch(const Error& error) {
+          trace.detail=error.what();
+          out.traces.push_back(std::move(trace));
+          if(attempt==step.max_attempts || error.code()!=ErrorCode::host_failed) {
+            out.failure=Failure{error.code(),id,error.what()};
+            return out;
+          }
+        } catch(const std::exception& error) {
+          trace.detail=error.what();
+          out.traces.push_back(std::move(trace));
           if(attempt==step.max_attempts) {
-            out.failure=Failure{ErrorCode::operation_failed,id,e.what()};return out;
+            out.failure=Failure{ErrorCode::operation_failed,id,error.what()};
+            return out;
           }
         } catch(...) {
+          trace.detail="unknown operation failure";
           out.traces.push_back(std::move(trace));
-          out.failure=Failure{ErrorCode::operation_failed,id,"unknown operation exception"};return out;
+          out.failure=Failure{ErrorCode::operation_failed,id,"unknown operation failure"};
+          return out;
         }
       }
     }
     out.state=ExecutionState::completed;
-    if(!options.idempotency_key.empty())cache_[options.idempotency_key]={input,out};
+    if(!options.idempotency_key.empty()) cache_[options.idempotency_key]={input,out};
     return out;
+  }
+ public:
+  // Low-level service invocation is retained for existing callers. Application-bound
+  // execution additionally checks the lifecycle before any cache or service access.
+  Execution run(kloks::ServiceRegistry& services,const Values& input={},ExecutionOptions options={}) {
+    return execute([&services](const std::string& service,const std::string& operation,
+                               const kloks::Value& value){return services.call(service,operation,value);},
+                   input,std::move(options));
+  }
+  Execution run(Application& app,const Values& input={},ExecutionOptions options={}) {
+    if(app.state()!=ApplicationState::running)
+      throw Error(ErrorCode::invalid_state,"workflow","application is not running");
+    return execute([&app](const std::string& service,const std::string& operation,
+                          const kloks::Value& value){return app.invoke(service,operation,value);},
+                   input,std::move(options));
   }
 };
 }
