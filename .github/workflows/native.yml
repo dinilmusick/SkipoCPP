@@ -41,7 +41,7 @@ jobs:
           GutCPP 443ad9397c081dd596e784c50cff14c1ecad95c6
           KrnlCPP b2b9814e2fb7034a72d5f9c3b5fd6a3b005ed883
           FrnlCPP 536a46228a8fde46fddc95447ca264fa2ed5fd6b
-          KloksCPP 14c0ffac92165abf07f46c2ae8b326c4f80c7a0d
+          KloksCPP ed99c35c34a16fb1ff77084ec936f44c8f967ed5
           FloksCPP 32e8088630e415718d35f30fd49e456727c1fadc
           LOCK
       - name: Build, unit tests and install SkipoCPP
@@ -85,7 +85,7 @@ jobs:
           GutCPP 443ad9397c081dd596e784c50cff14c1ecad95c6
           KrnlCPP b2b9814e2fb7034a72d5f9c3b5fd6a3b005ed883
           FrnlCPP 536a46228a8fde46fddc95447ca264fa2ed5fd6b
-          KloksCPP 14c0ffac92165abf07f46c2ae8b326c4f80c7a0d
+          KloksCPP ed99c35c34a16fb1ff77084ec936f44c8f967ed5
           FloksCPP 32e8088630e415718d35f30fd49e456727c1fadc
           LOCK
       - name: ASan and UBSan

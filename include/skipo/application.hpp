@@ -87,7 +87,7 @@ class Application {
   }
   Application(const Application&)=delete;
   Application& operator=(const Application&)=delete;
-  ~Application(){dispose();}
+  ~Application() noexcept {try{dispose();}catch(...){/* Explicit dispose is required to observe cleanup failures. */}}
   ApplicationState state() const noexcept { return state_; }
   kloks::ServiceRegistry& services() noexcept { return services_; }
   const HostBindings& hosts() const noexcept { return hosts_; }
@@ -154,29 +154,36 @@ class Application {
       for(const auto& id:service_order_) services_.start(id);
       state_=ApplicationState::running;
     } catch(...) {
-      services_.stop_all();
       state_=ApplicationState::failed;
+      services_.stop_all(); // A failed rollback is reported rather than silently discarded.
       throw;
     }
   }
   void suspend() {
     if(state_!=ApplicationState::running) throw Error(ErrorCode::invalid_state,"application","suspend requires running");
     Changing guard(changing_);
-    services_.stop_all(); state_=ApplicationState::suspended;
+    try {services_.stop_all();state_=ApplicationState::suspended;}
+    catch(...) {state_=ApplicationState::failed;throw;}
   }
   void resume() {
     if(state_!=ApplicationState::suspended) throw Error(ErrorCode::invalid_state,"application","resume requires suspended");
     Changing guard(changing_);
     try {for(const auto& id:service_order_)services_.start(id);state_=ApplicationState::running;}
-    catch(...){services_.stop_all();state_=ApplicationState::failed;throw;}
+    catch(...){state_=ApplicationState::failed;services_.stop_all();throw;}
   }
-  void stop() noexcept {
+  // Explicit lifecycle APIs are fallible. Failed cleanup retains the running
+  // native provider and its dependencies, and can be retried by the caller.
+  void stop() {
     if(state_==ApplicationState::disposed||state_==ApplicationState::stopped||state_==ApplicationState::created)return;
-    services_.stop_all();state_=ApplicationState::stopped;
+    Changing guard(changing_);
+    try {services_.stop_all();state_=ApplicationState::stopped;}
+    catch(...) {state_=ApplicationState::failed;throw;}
   }
-  void dispose() noexcept {
+  void dispose() {
     if(state_==ApplicationState::disposed)return;
-    stop();services_.dispose();state_=ApplicationState::disposed;
+    stop();
+    try {services_.dispose();state_=ApplicationState::disposed;}
+    catch(...) {state_=ApplicationState::failed;throw;}
   }
 };
 }

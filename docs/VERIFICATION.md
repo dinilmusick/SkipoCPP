@@ -29,10 +29,12 @@
   durability, cross-process deduplication and asynchronous interruption
   require explicit host contracts. A retry-safe flag does not make an
   arbitrary external side effect idempotent.
-- KloksCPP at the pinned revision catches `on_stop` exceptions internally.
-  SkipoCPP cannot reliably surface those errors without changing the
-  authoritative KloksCPP teardown contract. This is a recorded upstream
-  parity gap, not an invented success or a SkipoCPP-local service clone.
+- KloksCPP checked-teardown provider release PR #8 propagates `on_stop` failures.
+  SkipoCPP explicit `stop`, `suspend`, and `dispose` report these failures,
+  preserving still-running dependencies for an explicit cleanup retry.
+  Destructors remain `noexcept`, so hosts must explicitly stop/dispose to
+  observe teardown failures. Provider release: KloksCPP main commit `ed99c35c34a16fb1ff77084ec936f44c8f967ed5`.
+  SkipoCPP release still requires its own exact-head and exact-main CI.
 - C++ native semantics are not React or browser renderers. FrnlCPP and
   FloksCPP provide the reusable UI/state/event vocabulary.
 - Storage path confinement, cryptographic authorization and real remote
