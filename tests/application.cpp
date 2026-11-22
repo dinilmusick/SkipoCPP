@@ -22,11 +22,18 @@ int main() {
   second.on_stop=[&]{log.push_back("second:stop");};
   second.operations["echo"]=[](const kloks::Value& value,const kloks::ServiceContext&){return value;};
   app.add_service(std::move(second));
-  app.initialize();app.start();assert(log[0]=="first:start" && log[1]=="second:start");
+  app.initialize();
+  try{(void)app.invoke("second","echo",std::int64_t{10});assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::invalid_state);}
+  app.start();assert(log[0]=="first:start" && log[1]=="second:start");
   auto value=app.services().call("second","echo",std::int64_t{10});
   assert(std::get<std::int64_t>(value)==10);
   app.suspend();assert(log[2]=="second:stop" && log[3]=="first:stop");
-  app.resume();app.stop();app.stop();app.dispose();app.dispose();
+  try{(void)app.invoke("second","echo",std::int64_t{10});assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::invalid_state);}
+  app.resume();
+  assert(std::get<std::int64_t>(app.invoke("second","echo",std::int64_t{11}))==11);
+  app.stop();app.stop();app.dispose();app.dispose();
   assert(app.state()==skipo::ApplicationState::disposed);
   skipo::Application cycle({"cycle","1",{}, {}});
   kloks::ServiceDefinition a;a.id="a";a.name="A";a.version="1";a.dependencies={"b"};
@@ -42,5 +49,29 @@ int main() {
   rollback.initialize();
   try{rollback.start();assert(false);}catch(const std::runtime_error&){assert(rollback.state()==skipo::ApplicationState::failed);}
   assert(log.back()=="ok:stop");
+
+  // Declaration without a concrete Kloks/host provider must never pass initialization.
+  skipo::Application phantom({"phantom","1",{"ghost"},{}});
+  phantom.add_capability({"ghost",{}});
+  try{phantom.initialize();assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::missing_capability);}
+  skipo::Application composed({"composed","1",{"summary"},{}});
+  composed.add_capability({"summary",{"number"}});
+  kloks::ServiceDefinition provider;provider.id="provider";provider.name="Provider";provider.version="1";
+  provider.capabilities.insert("number");
+  provider.operations["read"]=[](const kloks::Value&,const kloks::ServiceContext&){
+    return kloks::Value{std::int64_t{15}};
+  };
+  composed.add_service(std::move(provider));
+  composed.initialize();composed.start();
+  assert(std::get<std::int64_t>(composed.invoke("provider","read"))==15);
+  composed.dispose();
+  skipo::Application broken_cap({"broken-cap","1",{},{}});
+  broken_cap.add_capability({"a",{"missing"}});
+  try{broken_cap.initialize();assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::missing_capability);}
+  skipo::Application duplicates({"duplicates","1",{},{}});
+  try{duplicates.add_capability({"a",{"b","b"}});assert(false);}
+  catch(const skipo::Error& e){assert(e.code()==skipo::ErrorCode::duplicate);}
   return 0;
 }

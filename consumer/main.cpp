@@ -37,6 +37,7 @@ int main(){
   };
   app.add_service(std::move(second));
   app.initialize();app.start();
+  assert(std::get<std::int64_t>(app.invoke("source","read"))==8);
   skipo::Workflow workflow;
   workflow.add({"load","source","read",{},nullptr,1,false});
   workflow.add({"save","sink","write",{"load"},
