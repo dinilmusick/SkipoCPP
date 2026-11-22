@@ -16,9 +16,10 @@ int main(){
   app.add_capability({"number",{}});
   krnl::Service krnl_source({"source","Source","1",{"number"},{"memory"}});
   krnl::OperationInfo info;info.name="read";info.description="Read number";
-  auto registration=krnl_source.register_operation(info,[](const std::any&,const krnl::InvocationContext&,krnl::Cancellation){
-    return krnl::Result<std::any>(std::any(kloks::Value{std::int64_t{8}}));
-  });
+  auto registration=krnl_source.add_operation<kloks::Value,kloks::Value>(
+    info,[](const kloks::Value&,const krnl::InvocationContext&,krnl::Cancellation)->krnl::Result<kloks::Value>{
+      return kloks::Value{std::int64_t{8}};
+    });
   assert(registration.ok());
   auto source=kloks::bind_krnl_service(krnl_source);
   app.add_service(std::move(source));
