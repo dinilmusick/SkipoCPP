@@ -38,7 +38,7 @@ jobs:
             cmake --build "_deps/${name}/build" --config "${{ matrix.build }}" --parallel 2
             cmake --install "_deps/${name}/build" --config "${{ matrix.build }}"
           done <<'LOCK'
-          GutCPP 443ad9397c081dd596e784c50cff14c1ecad95c6
+          GutCPP 53afce0ccae6787ecc8cfd8359b64803f7237d00
           KrnlCPP b2b9814e2fb7034a72d5f9c3b5fd6a3b005ed883
           FrnlCPP 536a46228a8fde46fddc95447ca264fa2ed5fd6b
           KloksCPP ed99c35c34a16fb1ff77084ec936f44c8f967ed5
@@ -82,7 +82,7 @@ jobs:
             cmake -S "_deps/${name}" -B "_deps/${name}/build" -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX="$PWD/_install"
             cmake --install "_deps/${name}/build"
           done <<'LOCK'
-          GutCPP 443ad9397c081dd596e784c50cff14c1ecad95c6
+          GutCPP 53afce0ccae6787ecc8cfd8359b64803f7237d00
           KrnlCPP b2b9814e2fb7034a72d5f9c3b5fd6a3b005ed883
           FrnlCPP 536a46228a8fde46fddc95447ca264fa2ed5fd6b
           KloksCPP ed99c35c34a16fb1ff77084ec936f44c8f967ed5
