@@ -74,7 +74,7 @@ class ReleaseMergerTests(unittest.TestCase):
     def test_no_merge_if_checks_missing(self):
         p = sample()
         records = [
-            {"object": {"sha": "b" * 40}}, [p], [{"filename": "Cargo.toml"}],
+            {"object": {"sha": "b" * 40}}, [p], [{"filename": "version.txt"}],
             {"total_count": 0, "workflow_runs": []},
         ]
         with patch.object(merger, "github", side_effect=records) as api:
