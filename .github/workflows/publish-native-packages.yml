@@ -1,0 +1,163 @@
+name: Native package distribution
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing immutable vX.Y.Z tag for replay/backfill'
+        required: true
+        type: string
+      publish:
+        description: 'Actually publish to authorized Conan/vcpkg registries'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-package-distribution-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: ${{ github.event_name == 'release' && !github.event.release.prerelease && !github.event.release.draft || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+      package: ${{ steps.identity.outputs.package }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Independently verify immutable tag and version on main
+        id: identity
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          version="$(cat version.txt)"
+          test "$TAG" = "v$version"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$TAG^{commit}")"
+          git fetch origin main --quiet
+          git merge-base --is-ancestor HEAD origin/main
+          test "$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')" = "$version"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package=skipocpp" >> "$GITHUB_OUTPUT"
+      - name: Parse Conan release recipe without remote credentials
+        run: |
+          python3 -m pip install --disable-pip-version-check 'conan>=2.10,<3'
+          conan inspect .
+  publish-conan:
+    needs: verify
+    if: ${{ (github.event_name == 'release' || inputs.publish == true) && vars.NATIVE_CONAN_PUBLISH_READY == 'true' && vars.NATIVE_UPSTREAM_PACKAGES_READY == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: native-packages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          persist-credentials: false
+      - name: Configure remote-scoped Conan 2 credentials in runner only
+        env:
+          CONAN_REMOTE_URL: ${{ vars.CONAN_REMOTE_URL }}
+          CONAN_REMOTE_USER: ${{ secrets.CONAN_REMOTE_USER }}
+          CONAN_REMOTE_PASSWORD: ${{ secrets.CONAN_REMOTE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CONAN_REMOTE_URL"
+          test -n "$CONAN_REMOTE_USER"
+          test -n "$CONAN_REMOTE_PASSWORD"
+          python3 -m pip install --disable-pip-version-check 'conan>=2.10,<3'
+          conan profile detect --force
+          conan remote add ultrst "$CONAN_REMOTE_URL" --force
+          conan remote login ultrst "$CONAN_REMOTE_USER" -p "$CONAN_REMOTE_PASSWORD"
+      - name: Build exact source recipe then upload package binaries and verify remote
+        env:
+          PACKAGE: ${{ needs.verify.outputs.package }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          conan create . --version "$VERSION" --build=missing
+          conan upload "$PACKAGE/$VERSION" --confirm -r ultrst
+          conan list "$PACKAGE/$VERSION:*" -r ultrst
+
+  publish-vcpkg:
+    needs: verify
+    if: ${{ (github.event_name == 'release' || inputs.publish == true) && vars.NATIVE_VCPKG_PUBLISH_READY == 'true' && vars.NATIVE_UPSTREAM_PACKAGES_READY == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: native-packages
+    steps:
+      - name: Mint short-lived write token scoped only to forge-registry
+        id: registry-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_PLZ_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+          owner: dinilmusick
+          repositories: forge-registry
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@v4
+        with:
+          repository: dinilmusick/forge-registry
+          ref: main
+          path: registry
+          fetch-depth: 0
+          token: ${{ steps.registry-token.outputs.token }}
+          persist-credentials: true
+      - name: Prepare a checksum-pinned native package registry PR
+        env:
+          GH_TOKEN: ${{ steps.registry-token.outputs.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PACKAGE: ${{ needs.verify.outputs.package }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          manifest=json.load(open('registry/native-packages.json'))['packages']
+          expected=manifest[os.environ['PACKAGE']]['repository']
+          if expected != os.environ['GITHUB_REPOSITORY']:
+              raise SystemExit('Publisher repository does not match canonical registry ownership')
+          PY
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+            "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$TAG.tar.gz" \
+            --output "$RUNNER_TEMP/native-source.tar.gz"
+          archive_sha="$(sha512sum "$RUNNER_TEMP/native-source.tar.gz" | cut -d' ' -f1)"
+          cd registry
+          branch="native-release/$PACKAGE/$VERSION"
+          if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1; then
+            gh pr view "$branch" --repo dinilmusick/forge-registry --json state --jq .state
+            echo "Existing registry proposal found; refusing to overwrite its head."
+            exit 0
+          fi
+          git checkout -b "$branch"
+          python3 tools/update_native_release.py --name "$PACKAGE" --version "$VERSION" --sha512 "$archive_sha"
+          git config user.name 'ultrst-native-release[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "ports/$PACKAGE"
+          git diff --cached --quiet && { echo "Registry port already exists"; exit 0; }
+          git commit -m "chore(vcpkg): stage $PACKAGE $VERSION"
+          tree="$(git rev-parse "HEAD:ports/$PACKAGE")"
+          python3 tools/update_version_index.py --name "$PACKAGE" --version "$VERSION" --tree "$tree"
+          git add versions
+          git commit -m "chore(vcpkg): pin $PACKAGE $VERSION to tree $tree"
+          git push -u origin "$branch"
+          gh pr create --repo dinilmusick/forge-registry --base main --head "$branch" \
+            --title "chore(vcpkg): release $PACKAGE $VERSION" \
+            --body "Automated immutable SHA512 GitHub source archive, checked-in git-tree history, and vcpkg consumer verification. Source: $GITHUB_REPOSITORY@$TAG"
