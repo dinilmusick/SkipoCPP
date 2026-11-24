@@ -15,7 +15,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: native-package-distribution-${{ github.repository }}
@@ -96,37 +96,64 @@ jobs:
 
   publish-vcpkg:
     needs: verify
-    if: \${{ (github.event_name == 'release' || inputs.publish == true) }}
+    if: ${{ (github.event_name == 'release' || inputs.publish == true) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ needs.verify.outputs.tag }}
+          ref: ${{ needs.verify.outputs.tag }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Build self-contained vcpkg port archive
+      - name: Generate self-contained vcpkg overlay port
         env:
-          PACKAGE: \${{ needs.verify.outputs.package }}
-          VERSION: \${{ needs.verify.outputs.version }}
+          PACKAGE: ${{ needs.verify.outputs.package }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        shell: bash
         run: |
           set -euo pipefail
-          test -f vcpkg.json
           mkdir -p "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE"
-          cp vcpkg.json "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/"
-          test ! -f portfile.cmake || cp portfile.cmake "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/"
-          test ! -f vcpkg/portfile.cmake || cp vcpkg/portfile.cmake "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/"
-          cp version.txt "$RUNNER_TEMP/vcpkg-port/"
-          tar -C "$RUNNER_TEMP/vcpkg-port" -czf "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.tar.gz" .
-          sha512sum "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.tar.gz" > "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.sha512"
+          cat > "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/vcpkg.json" <<EOF
+          {
+            "name": "$PACKAGE",
+            "version": "$VERSION",
+            "description": "ULTRST $PACKAGE native library",
+            "homepage": "https://github.com/${{ github.repository }}",
+            "supports": "!uwp"
+          }
+          EOF
+          cat > "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/portfile.cmake" <<EOF
+          vcpkg_from_github(
+              OUT_SOURCE_PATH SOURCE_PATH
+              REPO ${{ github.repository }}
+              REF v$VERSION
+          )
+          vcpkg_cmake_configure(
+              SOURCE_PATH "${SOURCE_PATH}"
+              OPTIONS -DBUILD_TESTING=OFF -DKLOKSC_BUILD_TESTS=OFF
+          )
+          vcpkg_cmake_install()
+          vcpkg_cmake_config_fixup(PACKAGE_NAME "$PACKAGE")
+          file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
+          EOF
+          printf '%s\n' "$VERSION" > "$RUNNER_TEMP/vcpkg-port/version.txt"
+          printf '%s\n' "This archive is a self-contained vcpkg overlay port for $PACKAGE $VERSION." > "$RUNNER_TEMP/vcpkg-port/README.txt"
+          tar -C "$RUNNER_TEMP/vcpkg-port" -czf "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.tar.gz" .
+          sha512sum "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.tar.gz" > "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.sha512"
+      - name: Validate generated vcpkg port
+        env:
+          PACKAGE: ${{ needs.verify.outputs.package }}
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/vcpkg.json"
+          test -f "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/portfile.cmake"
       - name: Attach immutable vcpkg port package to GitHub Release
         env:
-          GH_TOKEN: \${{ github.token }}
-          TAG: \${{ needs.verify.outputs.tag }}
-          PACKAGE: \${{ needs.verify.outputs.package }}
-          VERSION: \${{ needs.verify.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          PACKAGE: ${{ needs.verify.outputs.package }}
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
-          gh release upload "$TAG" \
-            "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.tar.gz" \
-            "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.sha512" \
-            --clobber
+          set -euo pipefail
+          gh release upload "$TAG"             "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.tar.gz"             "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.sha512"             --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fx "$PACKAGE-$VERSION-vcpkg-port.tar.gz"
