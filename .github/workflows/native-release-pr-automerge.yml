@@ -1,0 +1,55 @@
+name: CI-verified native version PR auto-merge
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/native-release-pr-automerge.yml'
+      - 'scripts/merge_verified_native_release_pr.py'
+      - 'scripts/test_merge_verified_native_release_pr.py'
+  workflow_run:
+    workflows: ["SkipoCPP pinned native build and external consumer", "Native package recipe lint"]
+    types: [completed]
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-policy:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise fail-closed bot PR and exact-head CI checks
+        run: python3 -B -m unittest discover -s scripts -p 'test_merge_verified_native_release_pr.py'
+  merge:
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.RELEASE_PLZ_APP_READY == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    concurrency:
+      group: verified-native-version-pr-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Mint short-lived native release GitHub App token
+        id: bot-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_PLZ_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Test release merge policy offline
+        run: python3 -B -m unittest discover -s scripts -p 'test_merge_verified_native_release_pr.py'
+      - name: Merge exclusively bot-authored, metadata-only, fully CI-verified release PR
+        env:
+          GH_TOKEN: ${{ steps.bot-token.outputs.token }}
+          REQUIRED_RELEASE_CHECKS: '["SkipoCPP pinned native build and external consumer","Native package recipe lint"]'
+        run: python3 -B scripts/merge_verified_native_release_pr.py

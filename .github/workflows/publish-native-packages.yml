@@ -1,0 +1,159 @@
+name: Native package distribution
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing immutable vX.Y.Z tag for replay/backfill'
+        required: true
+        type: string
+      publish:
+        description: 'Actually publish to authorized Conan/vcpkg registries'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: native-package-distribution-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: ${{ github.event_name == 'release' && !github.event.release.prerelease && !github.event.release.draft || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+      package: ${{ steps.identity.outputs.package }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Independently verify immutable tag and version on main
+        id: identity
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          version="$(cat version.txt)"
+          test "$TAG" = "v$version"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$TAG^{commit}")"
+          git fetch origin main --quiet
+          git merge-base --is-ancestor HEAD origin/main
+          test "$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')" = "$version"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package=skipocpp" >> "$GITHUB_OUTPUT"
+      - name: Parse Conan release recipe without remote credentials
+        run: |
+          python3 -m pip install --disable-pip-version-check 'conan>=2.10,<3'
+          conan inspect .
+  publish-conan:
+    needs: verify
+    if: ${{ (github.event_name == 'release' || inputs.publish == true) && vars.NATIVE_CONAN_PUBLISH_READY == 'true' && vars.NATIVE_UPSTREAM_PACKAGES_READY == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: native-packages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          persist-credentials: false
+      - name: Configure remote-scoped Conan 2 credentials in runner only
+        env:
+          CONAN_REMOTE_URL: ${{ vars.CONAN_REMOTE_URL }}
+          CONAN_REMOTE_USER: ${{ secrets.CONAN_REMOTE_USER }}
+          CONAN_REMOTE_PASSWORD: ${{ secrets.CONAN_REMOTE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CONAN_REMOTE_URL"
+          test -n "$CONAN_REMOTE_USER"
+          test -n "$CONAN_REMOTE_PASSWORD"
+          python3 -m pip install --disable-pip-version-check 'conan>=2.10,<3'
+          conan profile detect --force
+          conan remote add ultrst "$CONAN_REMOTE_URL" --force
+          conan remote login ultrst "$CONAN_REMOTE_USER" -p "$CONAN_REMOTE_PASSWORD"
+      - name: Build exact source recipe then upload package binaries and verify remote
+        env:
+          PACKAGE: ${{ needs.verify.outputs.package }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          conan create . --version "$VERSION" --build=missing
+          conan upload "$PACKAGE/$VERSION" --confirm -r ultrst
+          conan list "$PACKAGE/$VERSION:*" -r ultrst
+
+  publish-vcpkg:
+    needs: verify
+    if: ${{ (github.event_name == 'release' || inputs.publish == true) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Generate self-contained vcpkg overlay port
+        env:
+          PACKAGE: ${{ needs.verify.outputs.package }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE"
+          cat > "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/vcpkg.json" <<EOF
+          {
+            "name": "$PACKAGE",
+            "version": "$VERSION",
+            "description": "ULTRST $PACKAGE native library",
+            "homepage": "https://github.com/${{ github.repository }}",
+            "supports": "!uwp"
+          }
+          EOF
+          cat > "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/portfile.cmake" <<EOF
+          vcpkg_from_github(
+              OUT_SOURCE_PATH SOURCE_PATH
+              REPO ${{ github.repository }}
+              REF v$VERSION
+          )
+          vcpkg_cmake_configure(
+              SOURCE_PATH "${SOURCE_PATH}"
+              OPTIONS -DBUILD_TESTING=OFF -DKLOKSC_BUILD_TESTS=OFF
+          )
+          vcpkg_cmake_install()
+          vcpkg_cmake_config_fixup(PACKAGE_NAME "$PACKAGE")
+          file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
+          EOF
+          printf '%s\n' "$VERSION" > "$RUNNER_TEMP/vcpkg-port/version.txt"
+          printf '%s\n' "This archive is a self-contained vcpkg overlay port for $PACKAGE $VERSION." > "$RUNNER_TEMP/vcpkg-port/README.txt"
+          tar -C "$RUNNER_TEMP/vcpkg-port" -czf "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.tar.gz" .
+          sha512sum "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.tar.gz" > "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.sha512"
+      - name: Validate generated vcpkg port
+        env:
+          PACKAGE: ${{ needs.verify.outputs.package }}
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/vcpkg.json"
+          test -f "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/portfile.cmake"
+      - name: Attach immutable vcpkg port package to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          PACKAGE: ${{ needs.verify.outputs.package }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG"             "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.tar.gz"             "$RUNNER_TEMP/$PACKAGE-$VERSION-vcpkg-port.sha512"             --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fx "$PACKAGE-$VERSION-vcpkg-port.tar.gz"

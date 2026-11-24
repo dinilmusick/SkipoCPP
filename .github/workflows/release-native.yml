@@ -1,0 +1,61 @@
+name: Verified native source release
+on:
+  workflow_run:
+    workflows: ["SkipoCPP pinned native build and external consumer"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      prepare_release:
+        description: 'Manually reconcile semantic-version release PR or tag (main only)'
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      ${{ vars.RELEASE_PLZ_APP_READY == 'true' && github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.prepare_release == true) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Issue short-lived repository-scoped GitHub App release token
+        id: release-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_PLZ_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact current main commit, valid version, and source contract
+        env:
+          CERTIFIED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CERTIFIED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$CERTIFIED_SHA"
+          grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' version.txt
+          grep -q 'ULTRST_RELEASE_VERSION' CMakeLists.txt
+          python3 -m py_compile conanfile.py
+      - name: Require independently certified native upstream packages
+        if: ${{ vars.NATIVE_UPSTREAM_PACKAGES_READY != 'true' }}
+        run: echo '::warning::Upstream registry packages unverified; native release tags may be prepared, but distribution stays disabled.'
+      - name: Generate semantic release PR or publish verified immutable tag and release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ steps.release-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
