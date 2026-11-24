@@ -142,8 +142,14 @@ jobs:
           cd registry
           branch="native-release/$PACKAGE/$VERSION"
           if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1; then
-            gh pr view "$branch" --repo dinilmusick/forge-registry --json state --jq .state
-            echo "Existing registry proposal found; refusing to overwrite its head."
+            if state="$(gh pr view "$branch" --repo dinilmusick/forge-registry --json state --jq .state 2>/dev/null)"; then
+              test "$state" = "OPEN" || { echo "Closed registry proposal requires owner reconciliation" >&2; exit 1; }
+              echo "Existing open registry proposal found; not overwriting a tested branch."
+            else
+              gh pr create --repo dinilmusick/forge-registry --base main --head "$branch" \
+                --title "chore(vcpkg): release $PACKAGE $VERSION" \
+                --body "Reconciled existing immutable source tag $GITHUB_REPOSITORY@$TAG; independent registry CI required."
+            fi
             exit 0
           fi
           git checkout -b "$branch"
