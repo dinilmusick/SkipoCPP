@@ -1,0 +1,42 @@
+name: Native package recipe lint
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify version source and immutable native metadata
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re, subprocess
+          version = Path('version.txt').read_text().strip()
+          assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version), version
+          cmake = Path('CMakeLists.txt').read_text()
+          assert 'ULTRST_RELEASE_VERSION' in cmake and 'project(' in cmake
+          config = json.loads(Path('release-please-config.json').read_text())
+          assert config['packages']['.']['release-type'] == 'simple'
+          manifest = json.loads(Path('.release-please-manifest.json').read_text())
+          assert manifest['.'] == version, (manifest, version)
+          assert Path('conanfile.py').is_file()
+          subprocess.check_call(['python3','-B','-m','py_compile','conanfile.py'])
+          print('Validated one authoritative version for CMake, Conan and Release Please')
+          PY
+      - name: Install Conan 2 CLI for recipe validation
+        run: python3 -m pip install --disable-pip-version-check 'conan>=2.10,<3'
+      - name: Independently parse Conan package identity and dependency closure
+        run: |
+          conan --version
+          conan inspect .
