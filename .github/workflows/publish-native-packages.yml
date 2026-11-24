@@ -96,74 +96,37 @@ jobs:
 
   publish-vcpkg:
     needs: verify
-    if: ${{ (github.event_name == 'release' || inputs.publish == true) && vars.NATIVE_VCPKG_PUBLISH_READY == 'true' && vars.NATIVE_UPSTREAM_PACKAGES_READY == 'true' }}
+    if: \${{ (github.event_name == 'release' || inputs.publish == true) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-    environment: native-packages
+    timeout-minutes: 20
     steps:
-      - name: Mint short-lived write token scoped only to forge-registry
-        id: registry-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.RELEASE_PLZ_APP_ID }}
-          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
-          owner: dinilmusick
-          repositories: forge-registry
-          permission-contents: write
-          permission-pull-requests: write
       - uses: actions/checkout@v4
         with:
-          repository: dinilmusick/forge-registry
-          ref: main
-          path: registry
+          ref: \${{ needs.verify.outputs.tag }}
           fetch-depth: 0
-          token: ${{ steps.registry-token.outputs.token }}
-          persist-credentials: true
-      - name: Prepare a checksum-pinned native package registry PR
+          persist-credentials: false
+      - name: Build self-contained vcpkg port archive
         env:
-          GH_TOKEN: ${{ steps.registry-token.outputs.token }}
-          VERSION: ${{ needs.verify.outputs.version }}
-          PACKAGE: ${{ needs.verify.outputs.package }}
-          TAG: ${{ needs.verify.outputs.tag }}
-        shell: bash
+          PACKAGE: \${{ needs.verify.outputs.package }}
+          VERSION: \${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json, os
-          manifest=json.load(open('registry/native-packages.json'))['packages']
-          expected=manifest[os.environ['PACKAGE']]['repository']
-          if expected != os.environ['GITHUB_REPOSITORY']:
-              raise SystemExit('Publisher repository does not match canonical registry ownership')
-          PY
-          curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
-            "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$TAG.tar.gz" \
-            --output "$RUNNER_TEMP/native-source.tar.gz"
-          archive_sha="$(sha512sum "$RUNNER_TEMP/native-source.tar.gz" | cut -d' ' -f1)"
-          cd registry
-          branch="native-release/$PACKAGE/$VERSION"
-          if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1; then
-            if state="$(gh pr view "$branch" --repo dinilmusick/forge-registry --json state --jq .state 2>/dev/null)"; then
-              test "$state" = "OPEN" || { echo "Closed registry proposal requires owner reconciliation" >&2; exit 1; }
-              echo "Existing open registry proposal found; not overwriting a tested branch."
-            else
-              gh pr create --repo dinilmusick/forge-registry --base main --head "$branch" \
-                --title "chore(vcpkg): release $PACKAGE $VERSION" \
-                --body "Reconciled existing immutable source tag $GITHUB_REPOSITORY@$TAG; independent registry CI required."
-            fi
-            exit 0
-          fi
-          git checkout -b "$branch"
-          python3 tools/update_native_release.py --name "$PACKAGE" --version "$VERSION" --sha512 "$archive_sha"
-          git config user.name 'ultrst-native-release[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add "ports/$PACKAGE"
-          git diff --cached --quiet && { echo "Registry port already exists"; exit 0; }
-          git commit -m "chore(vcpkg): stage $PACKAGE $VERSION"
-          tree="$(git rev-parse "HEAD:ports/$PACKAGE")"
-          python3 tools/update_version_index.py --name "$PACKAGE" --version "$VERSION" --tree "$tree"
-          git add versions
-          git commit -m "chore(vcpkg): pin $PACKAGE $VERSION to tree $tree"
-          git push -u origin "$branch"
-          gh pr create --repo dinilmusick/forge-registry --base main --head "$branch" \
-            --title "chore(vcpkg): release $PACKAGE $VERSION" \
-            --body "Automated immutable SHA512 GitHub source archive, checked-in git-tree history, and vcpkg consumer verification. Source: $GITHUB_REPOSITORY@$TAG"
+          test -f vcpkg.json
+          mkdir -p "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE"
+          cp vcpkg.json "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/"
+          test ! -f portfile.cmake || cp portfile.cmake "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/"
+          test ! -f vcpkg/portfile.cmake || cp vcpkg/portfile.cmake "$RUNNER_TEMP/vcpkg-port/ports/$PACKAGE/"
+          cp version.txt "$RUNNER_TEMP/vcpkg-port/"
+          tar -C "$RUNNER_TEMP/vcpkg-port" -czf "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.tar.gz" .
+          sha512sum "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.tar.gz" > "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.sha512"
+      - name: Attach immutable vcpkg port package to GitHub Release
+        env:
+          GH_TOKEN: \${{ github.token }}
+          TAG: \${{ needs.verify.outputs.tag }}
+          PACKAGE: \${{ needs.verify.outputs.package }}
+          VERSION: \${{ needs.verify.outputs.version }}
+        run: |
+          gh release upload "$TAG" \
+            "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.tar.gz" \
+            "$RUNNER_TEMP/\${PACKAGE}-\${VERSION}-vcpkg-port.sha512" \
+            --clobber
